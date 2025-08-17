@@ -38,6 +38,7 @@ Thumbs.db
 # Python virtualenvs / envs
 venv/
 .venv/
+.env
 env/
 ENV/
 server/venv/
