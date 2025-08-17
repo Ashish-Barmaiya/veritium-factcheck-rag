@@ -1,0 +1,104 @@
+# Node / Next.js
+node_modules/
+**/node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Next.js build / output
+.next/
+client/.next/
+out/
+dist/
+build/
+next-env.d.ts
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.swp
+
+# Python virtualenvs / envs
+venv/
+.venv/
+env/
+ENV/
+server/venv/
+server/v/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+server/.pytest_cache/
+.mypy_cache/
+.python-version
+pip-wheel-metadata/
+
+# Test / coverage
+coverage/
+htmlcov/
+.coverage
+
+# Env files / secrets (do not commit secret keys)
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+*.crt
+
+# Databases / local files
+*.sqlite3
+*.db
+*.db-journal
+
+# Jupyter
+.ipynb_checkpoints
+
+# Build artifacts / static
+public/
+static/
+client/static/
+
+# Model / cache / large artifacts
+.cache/
+huggingface/
+transformers_cache/
+sentence_transformers/
+models/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+
+# Misc
+coverage/
+report.*.html
+
+# Optional: local Docker / compose overrides
+.env.override
+docker-compose.override.yml
+
+# Keep lockfiles (do not ignore): package-lock.json, yarn.lock, pnpm-lock.yaml, Bun.lockb
