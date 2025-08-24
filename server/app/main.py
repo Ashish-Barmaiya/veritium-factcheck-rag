@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from app.services.embedding_service import get_embedding
 from app.services.db_service import search_claim
 from app.services.huggingface_service import query_llm
+from app.utils.safe_parse_llm_response import safe_parse_llm_response
 
 app = FastAPI()
 
@@ -43,6 +44,7 @@ async def factcheck_claim(request: FactCheckRequest):
     f"- {r.payload['text']} "
     f"(Source: {r.payload['source_url']}, Date: {r.payload['date']}, "
     f"verdict: {r.payload['verdict'].replace('About this rating', '').strip()})"
+    f"{' | Points: ' + ', '.join(r.payload['short_points']) if r.payload.get('short_points') else ''}"
     for r in results
 ])
 
@@ -52,19 +54,25 @@ async def factcheck_claim(request: FactCheckRequest):
     Evidence:
     {evidence_text}
 
-    Task: Based on the evidence above, determine if the claim is True, False, or Misleading.
-    Respond strictly in valid JSON with:
+    Task: Based on the evidence above, determine the verdict of the claim.
+    Use the same verdict categories as provided in the dataset (e.g., True, False, Mostly True, Mostly False, Half True, Barely True, Satire, Incorrect Attribution, etc.).
     {{
-      "verdict": "True" | "False" | "Misleading",
+      "verdict": "<exact verdict label>",
       "explanation": "<brief reasoning>",
       "sources": ["<source_url1>", "<source_url2>", ...]
     }}
     """
 
-    llm_response = await query_llm(prompt)
+    raw_response = await query_llm(prompt)
+    llm_response = safe_parse_llm_response(raw_response)
+    if not llm_response:
+        llm_response = {
+            "verdict": "Unverified",
+            "explanation": "Unable to parse LLM response",
+            "sources": []
+        }
 
-    return {
-        # TODO: Send title of the top matched article 
+    return { 
         "claim": request.claim,
         "evidence": evidence_text,
         "llm_response": llm_response

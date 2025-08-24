@@ -1,12 +1,15 @@
 # server/app/ingestion/scrape_snope_v2.py
 
+import sys
 import time
-import math
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+
 from app.services.embedding_service import get_embedding
-from app.services.db_service import insert_claim
+from app.services.db_service import insert_claim_with_vector
+
+from app.config import REQUEST_TIMEOUT, SLEEP_BETWEEN_REQUESTS, MAX_RETRIES
 
 BASE_ARCHIVE = "https://www.snopes.com/fact-check/?pagenum={}"
 HEADERS = {
@@ -16,9 +19,9 @@ HEADERS = {
         "Chrome/138.0.0.0 Safari/537.36"
     )
 }
-REQUEST_TIMEOUT = 15
-SLEEP_BETWEEN_REQUESTS = 0.35  # be polite
-MAX_RETRIES = 3
+REQUEST_TIMEOUT = REQUEST_TIMEOUT
+SLEEP_BETWEEN_REQUESTS = SLEEP_BETWEEN_REQUESTS
+MAX_RETRIES = MAX_RETRIES
 
 def _fetch(url):
     """GET with basic retries."""
@@ -71,6 +74,7 @@ def _extract_archive_links(soup: BeautifulSoup):
     links = {u for u in links if "/fact-check/" in u}
     return sorted(links)
 
+
 def _parse_iso_date(soup: BeautifulSoup):
     # Prefer OpenGraph/Article meta
     meta = soup.select_one('meta[property="article:published_time"]')
@@ -86,6 +90,7 @@ def _parse_iso_date(soup: BeautifulSoup):
         return t2.get_text(strip=True)
     return None
 
+
 def _parse_verdict(soup: BeautifulSoup):
     """
     Prefer the explicit rating text block or the img alt.
@@ -93,8 +98,11 @@ def _parse_verdict(soup: BeautifulSoup):
     """
     # e.g., <div class="rating_title_wrap">Incorrect Attribution</div>
     vt = soup.select_one(".rating_title_wrap")
-    if vt and vt.get_text(strip=True):
-        return vt.get_text(strip=True)
+    if vt:
+        # Get only the text that is a direct child of the div, ignoring other tags
+        direct_text = "".join(vt.find_all(string=True, recursive=False)).strip()
+        if direct_text:
+            return direct_text
 
     # e.g., <div class="rating_img_wrap"><img alt="Incorrect Attribution" /></div>
     img = soup.select_one(".rating_img_wrap img[alt]")
@@ -108,6 +116,7 @@ def _parse_verdict(soup: BeautifulSoup):
 
     return "Unverified"
 
+
 def _parse_claim_text(soup: BeautifulSoup):
     # Most reliable: article H1
     h1 = soup.select_one("h1")
@@ -120,6 +129,7 @@ def _parse_claim_text(soup: BeautifulSoup):
         return t.get_text(strip=True)
 
     return None
+
 
 def scrape_article(url: str):
     s = _soup(url)
@@ -137,7 +147,8 @@ def scrape_article(url: str):
         "date": date_iso,
     }
 
-def scrape_snopes(start_page: int = 1, max_pages: int | None = None):
+
+def scrape_snopes(start_page: int, max_pages: int | None = None):
     page = start_page
     total_inserted = 0
     seen_urls = set()
@@ -184,15 +195,19 @@ def scrape_snopes(start_page: int = 1, max_pages: int | None = None):
                 continue
 
             try:
-                emb = get_embedding(claim)
-            except Exception as e:
-                print(f"    [ERR] Embedding failed: {e}")
-                continue
+                if insert_claim_with_vector(
+                    text=claim,
+                    verdict=verdict,
+                    source_url=source_url,
+                    short_points=None,  # Snopes doesn't have short points
+                    date=date_iso
+                ):
+                    total_inserted += 1
+                    print(f"    [OK] Inserted → verdict='{verdict}' date='{date_iso}'")
+                else:
+                    print(f"    [SKIP] Duplicate or failed insert for {source_url}")
+                    sys.exit(0)
 
-            try:
-                insert_claim(claim, verdict, source_url, date_iso, emb)
-                total_inserted += 1
-                print(f"    [OK] Inserted → verdict='{verdict}' date='{date_iso}'")
             except Exception as e:
                 print(f"    [ERR] Qdrant insert failed: {e}")
 
@@ -202,6 +217,7 @@ def scrape_snopes(start_page: int = 1, max_pages: int | None = None):
 
     print(f"\n[SUMMARY] Inserted {total_inserted} articles total.")
 
+
 if __name__ == "__main__":
     # Set max_pages=None to run until the archive ends.
-    scrape_snopes(start_page=68, max_pages=200)
+    scrape_snopes(start_page=1, max_pages=2)

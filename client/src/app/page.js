@@ -29,15 +29,31 @@ export default function Home() {
 
       const data = await response.json();
 
-      let parsedLLM = {};
-      try {
-        parsedLLM = JSON.parse(data.llm_response);
-      } catch {
-        parsedLLM = {
-          verdict: "Unverified",
-          explanation: "Unable to parse LLM response",
-          sources: [],
-        };
+      let parsedLLM = {
+        verdict: "Unverified",
+        explanation: "Unable to parse LLM response",
+        sources: [],
+      };
+
+      if (data && data.llm_response) {
+        if (typeof data.llm_response === "string") {
+          try {
+            parsedLLM = JSON.parse(data.llm_response);
+          } catch (err) {
+            console.error(
+              "Failed to parse LLM response:",
+              data.llm_response,
+              err
+            );
+          }
+        } else if (typeof data.llm_response === "object") {
+          parsedLLM = data.llm_response;
+        } else {
+          console.warn(
+            "Unexpected LLM response type:",
+            typeof data.llm_response
+          );
+        }
       }
 
       setResult({
@@ -55,16 +71,18 @@ export default function Home() {
   };
 
   const getVerdictColor = (verdict) => {
-    switch (verdict?.toLowerCase()) {
-      case "true":
-        return "bg-green-500";
-      case "false":
-        return "bg-red-500";
-      case "misleading":
-        return "bg-yellow-500";
-      default:
-        return "bg-gray-400";
-    }
+    if (!verdict) return "bg-gray-400";
+
+    const v = verdict.toLowerCase();
+
+    if (v.includes("true")) return "bg-green-500"; // true, mostly true, half true, barely true
+    if (v.includes("false")) return "bg-red-500"; // false, mostly false
+    if (v.includes("misleading")) return "bg-yellow-500";
+    if (v.includes("satire")) return "bg-purple-500"; // labeled satire
+    if (v.includes("correct attribution")) return "bg-blue-500"; // incorrect attribution
+    if (v.includes("miscaptioned")) return "bg-orange-500";
+
+    return "bg-gray-400"; // fallback
   };
 
   return (
@@ -134,25 +152,26 @@ export default function Home() {
         {result && (
           <div className="max-w-3xl mx-auto px-4 pb-20">
             <div className="bg-white shadow-lg rounded-lg p-6 border border-gray-100">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold text-gray-900">Verdict</h2>
+              {/* Extracted Evidence Title */}
+              {result.evidence && (
+                <h3 className="text-2xl font-serif font-semibold text-gray-800 mb-2">
+                  {result.evidence
+                    .split("(Source:")[0] // take only before "(Source:"
+                    .replace(/^-/, "") // remove leading dash if present
+                    .trim()}
+                </h3>
+              )}
+              <div className=" py-4 text-center justify-between mb-4">
+                {/* <h2 className="text-xl font-bold text-gray-900">Verdict</h2> */}
                 <span
-                  className={`px-4 py-1 text-lg rounded-full text-white font-semibold ${getVerdictColor(
+                  className={`px-6 py-3 text-2xl rounded-full text-white font-semibold ${getVerdictColor(
                     result.verdict
                   )}`}
                 >
                   {result.verdict}
                 </span>
               </div>
-              {/* Extracted Evidence Title */}
-              {result.evidence && (
-                <p className="text-md font-semibold text-gray-800 mb-2">
-                  {result.evidence
-                    .split("(Source:")[0] // take only before "(Source:"
-                    .replace(/^-/, "") // remove leading dash if present
-                    .trim()}
-                </p>
-              )}
+
               <p className="text-gray-700 mb-4">{result.explanation}</p>
               <h3 className="font-semibold text-gray-900 mb-2">Sources</h3>
               <ul className="list-disc list-inside text-blue-600 space-y-1">
