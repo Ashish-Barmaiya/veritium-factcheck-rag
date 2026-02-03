@@ -22,6 +22,7 @@ class ClaimModel(Base):
     published_date = Column(Date)
     version = Column(Integer, default=1)
     short_points = Column(Text, nullable=True)
+    raw_analysis_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     simhash = Column(String(20), index=True)
 

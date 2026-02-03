@@ -2,7 +2,7 @@
 from simhash import Simhash
 
 SIMHASH_FINGERPRINT_SIZE = 64  # Using 64-bit simhash fingerprints
-SIMHASH_THRESHOLD = 3
+SIMHASH_THRESHOLD = 2
 
 def compute_simhash(text: str) -> str:
     """Compute the simhash fingerprint for the given text and return it as a string."""

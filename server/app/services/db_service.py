@@ -111,7 +111,7 @@ def insert_claim_with_vector(text, verdict, source_url, short_points, date):
         db_session.close()
 
 
-# --- Combined Insertion Function v2 (Updated) ---
+# --- New Combined Insertion Function v2 (Updated) ---
 def insert_claim_with_vector_v2(
     text: str, 
     verdict: str, 
@@ -121,7 +121,8 @@ def insert_claim_with_vector_v2(
     entities_data: list[dict] | None = None,
     fact_checker_platform: str = 'fact_checker', # Default, can be overridden
     fact_checker_handle: str | None = None,      # Dynamic handle
-    fact_checker_display_name: str | None = None # Dynamic display name
+    fact_checker_display_name: str | None = None, # Dynamic display name
+    raw_analysis_json: str | None = None
 ):
     """
     Inserts claims after checking for deduplication using simhash.
@@ -236,7 +237,8 @@ def insert_claim_with_vector_v2(
             source_id=source_id,
             fact_checker_id=fact_checker_id,
             language='en', # Default language, could be made dynamic if needed
-            short_points="\n".join(short_points) if short_points else None
+            short_points="\n".join(short_points) if short_points else None,
+            raw_analysis_json=raw_analysis_json
         )
         db_session.add(new_claim)
         db_session.flush() # Get the claim ID before committing

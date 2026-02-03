@@ -4,6 +4,8 @@ import sys
 import time
 import logging
 import requests
+import asyncio
+import json  # Import json for serialization
 from bs4 import BeautifulSoup
 from datetime import datetime
 import spacy  # For NER
@@ -11,6 +13,7 @@ import spacy  # For NER
 # Import your updated functions and models
 from app.services.db_service import insert_claim_with_vector_v2, Session
 from app.models import ScraperRuns, ClaimModel, Source # Import ScraperRuns model
+from app.services.ollama_service import extract_structured_info # Import local LLM function
 
 # Import config (assuming these are defined)
 # Make sure these are correctly imported from your config
@@ -41,7 +44,6 @@ except OSError:
 
 
 # --- Scraper Helper Functions (Copied/Adapted from v2) ---
-
 def _fetch(url):
     """GET with basic retries."""
     for attempt in range(1, MAX_RETRIES + 1):
@@ -157,10 +159,30 @@ def scrape_article(url: str):
     verdict = _parse_verdict(s)
     date_iso = _parse_iso_date(s)  # This is the full ISO string
 
+    # Extract full article
+    article_content = s.select_one("#article-content")
+    if not article_content:
+        logger.warning(f"No article content found for {url}")
+        full_text = ""
+    else:
+        # Find all paragraph (<p>) and blockquote elements within the article
+        paragraphs = article_content.select("p[dir='ltr'], blockquote")
+        full_text_parts = []
+        
+        for p in paragraphs:
+            # Get the text and strip whitespace
+            text = p.get_text(strip=True)
+            if text:
+                full_text_parts.append(text)
+        
+        # Join all parts with a newline
+        full_text = "\n".join(full_text_parts)
+
     entities_data = []
-    if nlp and claim:
+    seen_entities_for_article = set() # Deduplication entities within articl
+    if nlp and full_text:
         try:
-            doc = nlp(claim)
+            doc = nlp(full_text)
             for ent in doc.ents:
                 # Filter or map Spacy labels to your entity kinds if needed
                 spacy_to_custom_kind = {
@@ -170,20 +192,28 @@ def scrape_article(url: str):
                     # Add more mappings as needed
                 }
                 kind = spacy_to_custom_kind.get(ent.label_, "topic")  # Default to topic
-                entities_data.append({
-                    "name": ent.text.strip(),
-                    "kind": kind,
-                    "lang": "en"  # Assuming English
-                })
+                name = ent.text.strip()
+                lang = "en"
+                # Create a unique key for the entity within this article
+                entity_key = (name.lower(), kind.lower(), lang.lower())
+                # Check if we've already added this entity for this article
+                if entity_key not in seen_entities_for_article:
+                    seen_entities_for_article.add(entity_key) # Mark as seen
+                    entities_data.append({
+                        "name": name,
+                        "kind": kind,
+                        "lang": lang
+                    })
         except Exception as e:
-             logger.warning(f"Error extracting entities for claim '{claim[:50]}...': {e}")
+             logger.warning(f"Error extracting entities for article {url}: {e}") # Log URL for context
 
     return {
         "claim": claim,
         "verdict": verdict,
         "source_url": url,
         "date_iso": date_iso,  # Full ISO string
-        "entities_data": entities_data
+        "entities_data": entities_data,
+        "full_article_text": full_text # Return full text for LLM processing
     }
 
 # --- Scraper Run Management ---
@@ -249,16 +279,14 @@ def scrape_snopes_v3(start_page: int, max_pages: int | None = None):
                 logger.info(f"[DONE] Reached max_pages at page {page}.")
                 break
             if stop_scraping:
-                logger.info("[STOP] Stop scraping condition met (article older than last run).")
-                break
+                logger.info("[STOP] Stop scraping condition met (article older than oldest known claim).")
+                break # Stop scraping if article is older than the oldest known claim
 
             archive_url = BASE_ARCHIVE.format(page)
             logger.info(f"\n=== Scraping Snopes archive page {page}: {archive_url}")
             soup = _soup(archive_url)
             if not soup:
                 logger.error("[STOP] Could not load archive page.")
-                # Update run as 'failed' or 'partial' due to page load error?
-                # update_scraper_run(SCRAPER_NAME, 'failed', total_fetched, total_inserted) 
                 break
 
             links = _extract_archive_links(soup)
@@ -275,8 +303,9 @@ def scrape_snopes_v3(start_page: int, max_pages: int | None = None):
                 total_fetched += 1
 
                 logger.info(f"  [{idx:02d}/{len(links)}] Article → {url}")
+
                 data = scrape_article(url)
-                # Be respectful with delay
+                # Respectful with delay
                 time.sleep(SLEEP_BETWEEN_REQUESTS) 
 
                 if not data:
@@ -287,13 +316,14 @@ def scrape_snopes_v3(start_page: int, max_pages: int | None = None):
                 verdict = data["verdict"]
                 source_url = data["source_url"]
                 date_iso = data["date_iso"]  # Full ISO string
-                entities_data = data["entities_data"]
+                full_text = data.get("full_article_text", "") # Get the full text
+                entities_data = data["entities_data"] # This is deduplicated within article
 
                 if not claim:
                     logger.warning("    [SKIP] No claim (H1) found.")
                     continue
 
-                # --- Check if article is older than last scrape ---
+                # --- Check if article is older than the oldest known claim ---
                 article_datetime = None
                 if date_iso:
                     try:
@@ -304,35 +334,53 @@ def scrape_snopes_v3(start_page: int, max_pages: int | None = None):
                         logger.warning(f"    [WARN] Could not parse article datetime '{date_iso}'. Proceeding.")
 
                 # --- Stop Condition Logic ---
-                # Only stop if we have an oldest claim date AND the current article is older than it
+                # Only stop if we have an oldest claim date AND the current article is older than or equal to it
                 if oldest_claim_date and article_datetime and article_datetime <= oldest_claim_date:
                     logger.info(f"    [STOP] Article date ({article_datetime}) is older than/equal to oldest known claim ({oldest_claim_date}). Stopping scraper.")
                     stop_scraping = True
-                    break 
+                    break # Break inner loop to move to next page or stop
+
+                # --- LLM Processing for key points and structured data ---
+                llm_extracted_content = {}
+                short_points_list = None # Initialize short_points
+                raw_analysis_json_str = None # Initialize raw_analysis_json string
+
+                if full_text:
+                    llm_extracted_content = extract_structured_info(full_text)
+                    key_evidence_list = llm_extracted_content.get('key_evidence', [])
+                    if isinstance(key_evidence_list, list):
+                         short_points_list = key_evidence_list
+                    else:
+                         logger.warning(f"LLM 'key_evidence' is not a list: {key_evidence_list}")
+                         short_points_list = []
+
+                    # Serialize the entire LLM response dictionary
+                    raw_analysis_json_str = json.dumps(llm_extracted_content) if llm_extracted_content else None
+
+                    if not llm_extracted_content:
+                        logger.warning(f"LLM extraction returned empty or failed for {source_url}")
 
                 # --- Insert using the new function ---
                 try:
-                    # Call the updated insertion function with Snopes-specific details
+                    # Call the updated insertion function with Snopes-specific details and LLM data
                     if insert_claim_with_vector_v2(
                         text=claim,
                         verdict=verdict,
                         source_url=source_url,
-                        short_points=None,  # Snopes doesn't have short points
+                        short_points=short_points_list, # Pass LLM-extracted key evidence
                         date=date_iso,  # Pass full ISO string
-                        entities_data=entities_data, # Pass extracted entities
-                        # --- Snopes-specific Actor details ---
+                        entities_data=entities_data, # Pass extracted entities from SpaCy
                         fact_checker_platform='fact_checker', # As defined in your Actor model CheckConstraint
                         fact_checker_handle='snopes', # Unique handle for Snopes
-                        fact_checker_display_name='Snopes' # Display name
-                        # --- End Snopes-specific details ---
+                        fact_checker_display_name='Snopes', # Display name
+                        raw_analysis_json=raw_analysis_json_str # Pass serialized LLM JSON response
                     ):
                         total_inserted += 1
-                        logger.info(f"    [OK] Inserted → verdict='{verdict}' date='{date_iso}' Entities: {len(entities_data)}")
+                        logger.info(f"    [OK] Inserted → verdict='{verdict}' date='{date_iso}' Entities: {len(entities_data)}, LLM Points: {len(short_points_list) if short_points_list else 0}")
                     else:
                          # Log message is handled inside insert_claim_with_vector_v2
                          # Could be duplicate, simhash match, or insertion failure
                         logger.info(f"    [SKIP] Skipped insert for {source_url} (duplicate, near-duplicate, or failure).")
-                        # Do NOT sys.exit(0) here, just continue to next article
 
                 except Exception as e:
                     logger.error(f"    [ERR] Insertion failed for {source_url}: {e}", exc_info=True)
@@ -349,7 +397,7 @@ def scrape_snopes_v3(start_page: int, max_pages: int | None = None):
         elif page == start_page and not links: # If the very first page failed/empty
              final_status = "failed"
         else:
-            final_status = "success" # Reached max_pages or natural end (though stop_scraping handles partial)
+            final_status = "success" # Reached max_pages or natural end
 
         update_scraper_run(SCRAPER_NAME, final_status, total_fetched, total_inserted)
         logger.info(f"\n[SUMMARY] Fetched {total_fetched} articles, Inserted {total_inserted} articles.")
@@ -357,4 +405,4 @@ def scrape_snopes_v3(start_page: int, max_pages: int | None = None):
 
 if __name__ == "__main__":
     # Set max_pages=None to run until the archive ends or stop condition is met.
-    scrape_snopes_v3(start_page=4, max_pages=1) # Example: scrape all from page 1
+    scrape_snopes_v3(start_page=3, max_pages=1) # Example: scrape page 4 only
